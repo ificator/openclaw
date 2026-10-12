@@ -151,6 +151,20 @@ export function withIncognitoTranscriptWriteSequence<T>(
       authority.assertCurrent();
       return await withTranscriptLockSettlement((enqueue) => {
         const queue = AsyncLocalStorage.bind(enqueue);
+        const readEvents = async () => {
+          const read = await actor.sessions.transcript(
+            authority,
+            { type: "session.lock.events", input: target },
+            binding.admissionSignal,
+          );
+          if ("refusedOwnerSource" in read) {
+            return refuseOwner(read.refusedOwnerSource);
+          }
+          acceptSessionSourceValidation(ownerSource, read.sourceValidation);
+          authority.assertCurrent();
+          observe(read.version);
+          return read.events;
+        };
         return run({
           publishUpdate: (update) =>
             queue(async () => {
@@ -175,28 +189,18 @@ export function withIncognitoTranscriptWriteSequence<T>(
               }
               await publication;
             }),
-          readEvents: () =>
-            queue(async () => {
-              const read = await actor.sessions.transcript(
-                authority,
-                { type: "session.lock.events", input: target },
-                binding.admissionSignal,
-              );
-              if ("refusedOwnerSource" in read) {
-                return refuseOwner(read.refusedOwnerSource);
-              }
-              acceptSessionSourceValidation(ownerSource, read.sourceValidation);
-              authority.assertCurrent();
-              observe(read.version);
-              return read.events;
-            }),
+          readEvents: () => queue(readEvents),
           readMessageFacts: (query) =>
             queue(async () => {
               const read = await actor.sessions.transcript(
                 authority,
                 {
                   type: "session.lock.facts",
-                  input: { ...target, idempotencyKeys: query.idempotencyKeys },
+                  input: {
+                    ...target,
+                    idempotencyKeys: query.idempotencyKeys,
+                    sourceRunId: query.sourceRunId,
+                  },
                 },
                 binding.admissionSignal,
               );
@@ -215,17 +219,7 @@ export function withIncognitoTranscriptWriteSequence<T>(
                 throw new SqliteTranscriptMutationConflictError(resolved.sessionId);
               }
               if (!expected) {
-                const read = await actor.sessions.transcript(
-                  authority,
-                  { type: "session.lock.events", input: target },
-                  binding.admissionSignal,
-                );
-                if ("refusedOwnerSource" in read) {
-                  refuseOwner(read.refusedOwnerSource);
-                }
-                acceptSessionSourceValidation(ownerSource, read.sourceValidation);
-                authority.assertCurrent();
-                observe(read.version);
+                await readEvents();
               }
               binding.admissionSignal?.throwIfAborted();
               const replaced = await actor.sessions.transcript(

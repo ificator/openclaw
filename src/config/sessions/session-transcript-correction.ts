@@ -16,6 +16,8 @@ import {
   rewriteTranscriptEventRowsExact,
   withTranscriptWriteSequence,
 } from "./session-accessor.sqlite-transcript-write.js";
+import { getSessionActorStorageBinding } from "./session-actor-storage-binding.js";
+import { readSessionActorStorageResult } from "./session-actor-storage-result.js";
 import { runSessionEntryWorkerOperation } from "./session-entry-patch.js";
 import {
   captureIncognitoSessionHistoryBinding,
@@ -28,7 +30,10 @@ import {
   releaseSessionSourceAuthorities,
 } from "./session-source-authority.js";
 import { withTranscriptLockSettlement } from "./session-transcript-lock-settlement.js";
-import type { SessionTranscriptCorrectionCommitted } from "./session-transcript-mutation.types.js";
+import type {
+  RefusedTranscriptOwnerSource,
+  SessionTranscriptCorrectionCommitted,
+} from "./session-transcript-mutation.types.js";
 import { withSessionTranscriptReadSource } from "./session-transcript-read-source.js";
 import { targetDiscoveryLane } from "./session-transcript-worker-resources.js";
 import {
@@ -42,6 +47,26 @@ type TranscriptCorrectionContext = {
   generation: string | null;
 };
 
+function selectCorrectionRows(
+  events: readonly TranscriptEvent[],
+  replacement: readonly TranscriptEvent[],
+  eventJson: readonly string[],
+) {
+  if (replacement.length !== events.length) {
+    throw new Error("Transcript correction cannot add or remove events");
+  }
+  return replacement.flatMap((event, index) => {
+    const original = events[index];
+    if (event === original) {
+      return [];
+    }
+    if (!isRecord(original) || typeof original.id !== "string") {
+      throw new Error("Transcript correction requires an identified event");
+    }
+    return [{ entryId: original.id, expectedEventJson: eventJson[index]!, event }];
+  });
+}
+
 /** Pure display preparation retains its source until exact-row commit and cleanup settle. */
 export async function withPreparedTranscriptCorrection<T>(
   requested: SessionTranscriptWriteScope,
@@ -49,9 +74,71 @@ export async function withPreparedTranscriptCorrection<T>(
   afterSeq?: number,
 ): Promise<T> {
   const fenced = withOwnedSessionTranscriptWriterFence(requested);
-  const target = resolveSqliteTranscriptScope(fenced);
+  const memory = getSessionActorStorageBinding(fenced);
+  const selectedSessionId =
+    fenced.sessionId ?? memory?.actor.snapshot(memory.authority)?.entry?.sessionId;
+  if (memory && !selectedSessionId) {
+    throw new Error("Transcript correction requires its selected session window");
+  }
+  const target = memory
+    ? {
+        agentId: memory.agentId,
+        path: memory.path,
+        sessionKey: memory.actor.target.sessionKey,
+        sessionId: selectedSessionId!,
+        env: fenced.env,
+      }
+    : resolveSqliteTranscriptScope(fenced);
   const scope = { ...fenced, sessionId: target.sessionId };
   const assertOwned = captureOwnedTranscriptWriteAssertion(scope);
+  if (memory) {
+    const authority = {
+      ...memory.authority,
+      assertCurrent() {
+        memory.authority.assertCurrent();
+        memory.actor.assertReadable();
+        assertOwned();
+      },
+    };
+    const snapshot = await memory.actor.storage!.read(
+      { type: "session.correction.prepare", input: { scope, afterSeq } },
+      authority,
+    );
+    const eventJson = snapshot.rows.map((row) => row.eventJson);
+    const events: TranscriptEvent[] = eventJson.map((json) => JSON.parse(json));
+    let generation = snapshot.version.generation;
+    const value = await withTranscriptLockSettlement((enqueue) => {
+      const queue = AsyncLocalStorage.bind(enqueue);
+      return run({
+        get generation() {
+          return generation;
+        },
+        readEvents: () =>
+          queue(async () => {
+            authority.assertCurrent();
+            return events;
+          }),
+        replaceEvents: (replacement) =>
+          queue(async () => {
+            const outcome = await memory.actor.storage!.mutate(
+              {
+                type: "session.correction.commit",
+                input: {
+                  scope,
+                  version: snapshot.version,
+                  rows: selectCorrectionRows(events, replacement, eventJson),
+                  allowLaterAppends: afterSeq !== undefined,
+                },
+              },
+              authority,
+            );
+            generation = readSessionActorStorageResult(outcome).generation;
+          }),
+      });
+    });
+    authority.assertCurrent();
+    return value;
+  }
   const operation = captureIncognitoSessionOperation(scope);
   const incognito = captureIncognitoSessionHistoryBinding(scope);
   if (incognito && operation) {
@@ -59,6 +146,10 @@ export async function withPreparedTranscriptCorrection<T>(
     return actor.sessions.withSharedState(async () => {
       const ownerSource = await prepareSessionSourceAuthority(assertOwned);
       const failures: unknown[] = [];
+      function refuseOwner(refused: RefusedTranscriptOwnerSource["refusedOwnerSource"]): never {
+        ownerSource.checks[refused.index]?.refuse(refused.facts);
+        throw new Error("Transcript correction owner refusal omitted its prepared assertion");
+      }
       try {
         if (
           ownerSource.nativeSource ||
@@ -95,33 +186,18 @@ export async function withPreparedTranscriptCorrection<T>(
           operation.admissionSignal,
         );
         if ("refusedOwnerSource" in snapshot) {
-          const refused = snapshot.refusedOwnerSource;
-          ownerSource.checks[refused.index]?.refuse(refused.facts);
-          throw new Error("Transcript correction owner refusal omitted its prepared assertion");
+          refuseOwner(snapshot.refusedOwnerSource);
         }
         acceptSessionSourceValidation(ownerSource, snapshot.sourceValidation);
         authority.assertCurrent();
-        const events: TranscriptEvent[] = snapshot.rows.map((row) => JSON.parse(row.eventJson));
+        const eventJson = snapshot.rows.map((row) => row.eventJson);
+        const events: TranscriptEvent[] = eventJson.map((json) => JSON.parse(json));
         const context: TranscriptCorrectionContext = {
           generation: snapshot.version.generation,
           readEvents: async () => events,
           replaceEvents: async (replacement) => {
             authority.assertCurrent();
-            if (replacement.length !== events.length) {
-              throw new Error("Transcript correction cannot add or remove events");
-            }
-            const rows = replacement.flatMap((event, index) => {
-              if (event === events[index]) {
-                return [];
-              }
-              const original = events[index];
-              if (!isRecord(original) || typeof original.id !== "string") {
-                throw new Error("Transcript correction requires an identified event");
-              }
-              return [
-                { entryId: original.id, expectedEventJson: snapshot.rows[index]!.eventJson, event },
-              ];
-            });
+            const rows = selectCorrectionRows(events, replacement, eventJson);
             const committed = await actor.sessions.transcript(
               authority,
               {
@@ -143,9 +219,7 @@ export async function withPreparedTranscriptCorrection<T>(
               },
             );
             if ("refusedOwnerSource" in committed) {
-              const refused = committed.refusedOwnerSource;
-              ownerSource.checks[refused.index]?.refuse(refused.facts);
-              throw new Error("Transcript correction owner refusal omitted its prepared assertion");
+              refuseOwner(committed.refusedOwnerSource);
             }
             context.generation = committed.generation;
           },
@@ -167,11 +241,7 @@ export async function withPreparedTranscriptCorrection<T>(
                     operation.admissionSignal,
                   );
                   if ("refusedOwnerSource" in validated) {
-                    const refused = validated.refusedOwnerSource;
-                    ownerSource.checks[refused.index]?.refuse(refused.facts);
-                    throw new Error(
-                      "Transcript correction owner refusal omitted its prepared assertion",
-                    );
+                    refuseOwner(validated.refusedOwnerSource);
                   }
                   acceptSessionSourceValidation(ownerSource, validated.sourceValidation);
                   authority.assertCurrent();
@@ -286,19 +356,7 @@ export async function withPreparedTranscriptCorrection<T>(
             readEvents: async () => events,
             replaceEvents: async (replacement) => {
               assertCurrent();
-              if (replacement.length !== events.length) {
-                throw new Error("Transcript correction cannot add or remove events");
-              }
-              const rows = replacement.flatMap((event, index) => {
-                if (event === events[index]) {
-                  return [];
-                }
-                const original = events[index];
-                if (!isRecord(original) || typeof original.id !== "string") {
-                  throw new Error("Transcript correction requires an identified event");
-                }
-                return [{ entryId: original.id, expectedEventJson: eventJson[index]!, event }];
-              });
+              const rows = selectCorrectionRows(events, replacement, eventJson);
               const committed = await commit(() =>
                 executeSessionMessageRewriteOperation(worker, database.agentId, {
                   type: "session.transcript.correct",

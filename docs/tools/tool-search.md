@@ -70,7 +70,7 @@ run:
 5. Apply optional include/exclude selectors to the eligible catalog. Keep
    unselected and excluded tools, core coding primitives, and direct-only tools
    model-visible; index compact descriptors for selected eligible tools.
-6. Add a deterministic, bounded, policy-filtered capability directory to the
+6. Add a size-limited capability directory selected by fixed rules and filtered by policy to the
    cache-stable system-prompt prefix.
 7. Expose the structured search, describe, and call tools or the compact
    directory surface alongside those stable, directly callable tools.
@@ -177,6 +177,10 @@ Tool Search changes the shape:
   search/describe/call controls, policy-required direct tools, and any
   direct-only tools
 - during the turn: the model can load remaining schemas as needed
+
+An enabled `message` tool stays directly visible in both modes, even when the
+current turn delivers final replies automatically. Switching reply delivery
+modes does not change that tool prefix or grant access to unavailable tools.
 
 Tool Search is useful when one run can see many tools, especially from MCP
 servers or client-provided app tools. Structured search is the default, but
@@ -475,7 +479,7 @@ OpenClaw does not record serialized tool or prompt byte counts. The
 [E2E scenario](#e2e-validation) measures provider payload bytes separately from
 the mock provider lane.
 
-Regardless of mode, completed target calls persist as bounded, redacted display
+Regardless of mode, completed target calls persist as bounded display
 activity in session history without adding synthetic model turns to replay.
 Search, describe, and call results carry each tool's `id` and `source`.
 Session logs therefore still answer:
@@ -528,7 +532,7 @@ benchmark.
 
 ## Failure behavior
 
-Tool Search should fail closed:
+Tool Search should reject unavailable or disallowed tools:
 
 - if a tool is not in the effective policy, search should not return it
 - if a selected tool becomes unavailable, `tool_call` should fail

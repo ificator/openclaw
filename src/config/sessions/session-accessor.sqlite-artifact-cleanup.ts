@@ -1,7 +1,7 @@
 import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
-import { getAgentDatabaseStartupAdmission } from "../../state/agent-database-startup.js";
+import { waitForAgentDatabasePreparation } from "../../state/agent-database-preparation-context.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
@@ -13,10 +13,7 @@ import type {
   SqliteSessionArtifactPreparationDiagnostics,
   SqliteSessionReclamationDiagnostics,
 } from "./session-accessor.sqlite-contract.js";
-import {
-  hasPreparedNativeSessionDeletion,
-  withSqliteSessionDeletions,
-} from "./session-accessor.sqlite-deletion.js";
+import { withSqliteSessionDeletions } from "./session-accessor.sqlite-deletion.js";
 import { prepareSessionLifecycleArtifactCleanup } from "./session-accessor.sqlite-lifecycle-artifacts.js";
 import { refreshSqliteSessionPlannerStatisticsBestEffort } from "./session-accessor.sqlite-maintenance.js";
 import { runSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-run.js";
@@ -92,10 +89,9 @@ export async function cleanupSessionLifecycleArtifactsCore(
     }),
   );
   const requestedOptions = toDatabaseOptions(requested);
-  const preparation = getAgentDatabaseStartupAdmission()?.waitForAgentPreparation(
-    requestedOptions.agentId,
-    { env: requested.env },
-  );
+  const preparation = waitForAgentDatabasePreparation(requestedOptions.agentId, {
+    env: requested.env,
+  });
   if (preparation) {
     await preparation;
   }
@@ -111,6 +107,10 @@ export async function cleanupSessionLifecycleArtifactsCore(
         }
       : readDatabasePathIdentitySync(requested.path)
     : undefined;
+  // An absent store has no historical artifacts, even if startup creates it after capture.
+  if (source?.key.startsWith("path:")) {
+    return { removedEntries: 0, archivedTranscriptArtifacts: 0 };
+  }
   const resolved = { ...requested, path: source?.canonicalPath ?? requested.path };
   const databaseOptions = { ...toDatabaseOptions(resolved), path: resolved.path };
   return withSqliteMutationWorkerLifetime(databaseOptions, async ({ assertCurrent, signal }) => {
@@ -202,7 +202,6 @@ export async function cleanupSessionLifecycleArtifactsCore(
           const reclaimed = await runSqliteSessionReclamation({
             diagnostics,
             assertCommitAllowed,
-            forceInProcess: hasPreparedNativeSessionDeletion(),
             plan,
           });
           if (reclaimed.kind !== plan.kind) {

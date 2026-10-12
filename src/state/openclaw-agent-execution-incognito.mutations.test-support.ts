@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { AsyncResource } from "node:async_hooks";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { lookupSessionGoalOperation } from "../config/sessions/goals-operations-read.js";
 import { mutateSessionGoal } from "../config/sessions/goals-operations.js";
 import { getSessionGoal } from "../config/sessions/goals.js";
@@ -16,7 +16,7 @@ import {
 import { rewritePreparedTranscriptMessageAtAnchor } from "../config/sessions/session-message-rewrite.js";
 import { withPreparedTranscriptCorrection } from "../config/sessions/session-transcript-correction.js";
 import { appendPreparedTranscriptEvent } from "../config/sessions/session-transcript-event.js";
-import { loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
+import { loadSessionTranscriptEvents as loadTranscriptEvents } from "../config/sessions/session-transcript-events.js";
 import { withOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import {
@@ -24,6 +24,7 @@ import {
   type IncognitoMutationFixture,
 } from "./openclaw-agent-execution-incognito.mutation-admission.test-support.js";
 import { registerIncognitoSdkMutationTests } from "./openclaw-agent-execution-incognito.sdk-mutations.test-support.js";
+import { useIncognitoNoHostSql } from "./openclaw-agent-execution-incognito.test-support.js";
 import { captureOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution.js";
 
 export function registerIncognitoSessionMutationTests(
@@ -403,7 +404,10 @@ export function registerIncognitoSessionMutationTests(
     });
   });
 
-  registerIncognitoSdkMutationTests(getFixture);
+  describe("SDK transcript mutations", () => {
+    useIncognitoNoHostSql();
+    registerIncognitoSdkMutationTests(getFixture);
+  });
 
   it.each(["explicit", "inherited"] as const)(
     "refuses an event after its %s writer fence is revoked",
