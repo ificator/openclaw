@@ -315,7 +315,6 @@ function registerToolSearchCatalog(params: {
     disposeCodeModeResults(params.catalogRef);
   }
   delete params.catalogRef.closedTelemetry;
-  params.catalogRef.onChange?.();
 }
 
 export function clearToolSearchCatalog(params: { catalogRef?: ToolSearchCatalogRef }): void {
@@ -341,10 +340,7 @@ export function clearToolSearchCatalog(params: { catalogRef?: ToolSearchCatalogR
     delete params.catalogRef.baselineDirectOnlyToolNames;
     disposeCodeModeResults(params.catalogRef);
     disposeToolSearchSchedule(params.catalogRef);
-    params.catalogRef.disposeObserver?.();
     params.catalogRef.onDispose?.forEach((dispose) => dispose());
-    delete params.catalogRef.onChange;
-    delete params.catalogRef.disposeObserver;
     delete params.catalogRef.onDispose;
   }
 }
@@ -384,7 +380,6 @@ export function restrictToolSearchCatalog(params: {
     ...metadata,
     fingerprint: catalogEntriesFingerprint(current.entries),
   });
-  params.catalogRef?.onChange?.();
   return entries.length;
 }
 

@@ -334,7 +334,7 @@ describe("Tool Search selectors", () => {
           tools: surface.tools,
           catalogRef,
           codeModeControlsEnabled: false,
-          toolSearchPrompt: { config },
+          catalogPrompt: { config },
         });
         const restricted = policy.apply({ toolsAllow: ["acme"] });
 
