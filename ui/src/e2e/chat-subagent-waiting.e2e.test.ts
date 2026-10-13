@@ -159,8 +159,10 @@ suite.define(() => {
         };
         const childHistoryReads = () =>
           gateway.getRequests("chat.history", { sessionKey: child.key });
-        // The auto-opened panel loads child metrics. Once closed, inline observer
+        // Only an explicit open loads child metrics. Once closed, inline observer
         // updates must render from the roster without fetching another transcript.
+        expect(await panel.isVisible()).toBe(false);
+        await selectChatLayoutAction(activePane, "Subagents");
         await panelRow.waitFor();
         await gateway.waitForRequest("chat.history", { match: { sessionKey: child.key } });
         await closePanel();
@@ -283,6 +285,7 @@ suite.define(() => {
           ...delegatingParent,
           hasActiveRun: false,
           activeRunIds: [],
+          endedAt: now + 2,
           updatedAt: now + 2,
           snapshotAt: now + 2,
         };
@@ -476,10 +479,12 @@ suite.define(() => {
           session: restartedChild,
           ancestorSessions: [waitingAgain],
         });
-        // The next batch reopens its panel, but the parent reflects the event
-        // while that panel's independent roster hydration is still pending.
+        // A later batch updates inline activity without reopening the panel.
+        // An explicit open still hydrates its independent roster.
         await activityRow.waitFor();
         expect(await indicator.count()).toBe(0);
+        expect(await panel.isVisible()).toBe(false);
+        await selectChatLayoutAction(activePane, "Subagents");
         await gateway.waitForRequest("sessions.list", {
           after: childReads,
           match: childRosterQuery,

@@ -170,7 +170,7 @@ describe("Tool Search selectors", () => {
           details: { parameters: deferred.parameters },
         });
         expect(
-          await control("tool_call").execute("call", { id: deferred.name, args: {} }),
+          await control("dispatch_action").execute("call", { id: deferred.name, args: {} }),
         ).toMatchObject({
           details: {
             tool: { source: "mcp", name: deferred.name },
@@ -327,7 +327,7 @@ describe("Tool Search selectors", () => {
         const entry = expectDefined(catalogRef.current?.entries[0], "foreign catalog entry");
         expect(entry.source).toBe(source);
         const call = expectDefined(
-          surface.tools.find((candidate) => candidate.name === "tool_call"),
+          surface.tools.find((candidate) => candidate.name === "dispatch_action"),
           "call control",
         );
         const policy = createAgentHarnessPromptToolPolicy({
