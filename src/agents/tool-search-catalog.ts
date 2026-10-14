@@ -487,7 +487,11 @@ export function applyToolCatalogCompaction(
   const selected = createToolSearchSelectionMatcher(params.selection);
   for (const tool of params.tools) {
     if (params.isVisibleControlTool(tool)) {
-      visible.push(tool);
+      visible.push(
+        params.toolHookContext && !isToolWrappedWithBeforeToolCallHook(tool)
+          ? wrapToolWithBeforeToolCallHook(tool, params.toolHookContext)
+          : tool,
+      );
       continue;
     }
     if (TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name)) {
